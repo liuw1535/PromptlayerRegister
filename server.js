@@ -101,7 +101,7 @@ async function findAndClickButton(page, buttonText, useXPath = false) {
     return true;
   } else if (useXPath) {
     // 备用方法：使用 XPath
-    const [xpathBtn] = await page.$x(`//button[contains(text(), "${buttonText}")]`);
+    const xpathBtn = await page.waitForXPath(`//button[contains(text(), "${buttonText}")]`).catch(() => null);
     if (xpathBtn) {
       await xpathBtn.click();
       console.log(`点击了 ${buttonText} 按钮 (XPath)`);
@@ -360,77 +360,50 @@ async function handlePostOnboarding(page) {
   }
   
   // 步骤 2: 关闭第一个弹窗
-  console.log('步骤 2: 关闭第一个弹窗...');
+  console.log('步骤 2: 关闭首页弹窗...');
   await delay(2000);
+  const closeButtonSelector = '[id="radix-:r32:"] > button > svg';
+  const closeButton = await page.waitForSelector(closeButtonSelector);
+  await closeButton.click();
+
   
-  const closeButton1 = await page.$('svg[width="15"][height="15"][viewBox="0 0 15 15"]');
-  if (closeButton1) {
-    const parentButton = await page.evaluateHandle(el => el.closest('button'), closeButton1);
-    if (parentButton && parentButton.asElement()) {
-      await parentButton.asElement().click();
-      console.log('关闭了第一个弹窗');
-    } else {
-      await closeButton1.click();
-      console.log('直接点击了关闭图标');
-    }
-    await delay(1000);
-  }
-  
-  // 步骤 3: 点击 Skip 按钮
-  console.log('步骤 3: 点击 Skip 按钮...');
-  await delay(1000);
-  await findAndClickButton(page, 'Skip');
-  await delay(1500);
-  
-  // 步骤 4: 点击 "Create a prompt" 按钮
-  console.log('步骤 4: 点击 Create a prompt 按钮...');
+  // 步骤 4: 点击 "spanButton" 按钮
+  console.log('步骤 3: 点击 spanButton 按钮...');
   await delay(2000);
+  const spanButtonSelector = "#registry-core h3 span";
+  const spanButton = await page.waitForSelector(spanButtonSelector, { visible: true });
+  await spanButton.click();  
   
-  const createPromptButton = await page.evaluateHandle(() => {
-    const buttons = Array.from(document.querySelectorAll('button'));
-    return buttons.find(btn =>
-      btn.textContent &&
-      btn.textContent.includes('Create a prompt') &&
-      btn.classList.contains('bg-primary')
-    );
-  });
+  await delay(3000);
   
-  if (createPromptButton && createPromptButton.asElement()) {
-    await createPromptButton.asElement().click();
-    console.log('点击了 Create a prompt 按钮');
-  } else {
-    // 备用方法：通过class特征寻找
-    const createBtn = await page.$('button.inline-flex.items-center.justify-center.rounded-md.font-medium.bg-primary');
-    if (createBtn) {
-      await createBtn.click();
-      console.log('点击了 Create a prompt 按钮（备用方法）');
-    }
+  // 步骤 5: 页面跳转后，点击span元素进入有Run按钮的界面
+  console.log('步骤 4: 点击Editor进入Run界面...');  
+  const EditorSelector = 'div:nth-child(3) > a > span > span';
+  const Editor = await page.waitForSelector(EditorSelector, { visible: true });
+  Editor.click();
+  if (Editor){
+    console.log('Editor点击成功');
+  }else{
+    console.log('Editor点击失败');
   }
   
   await delay(2000);
   
   // 步骤 7: 点击 Run 按钮
-  console.log('步骤 7: 点击 Run 按钮...');
+  console.log('步骤 5: 点击 Run 按钮...');
   await delay(2000);
-  await findAndClickButton(page, 'Run');
-  await delay(2000);
-  
-  // 步骤 8: 关闭弹窗并再次点击 Run
-  console.log('步骤 8: 关闭弹窗并再次点击 Run...');
-  await delay(1000);
-  
-  const closeButton2 = await page.$('svg[width="15"][height="15"] path[d*="M11.7816 4.03157"]');
-  if (closeButton2) {
-    const parentButton = await page.evaluateHandle(el => el.closest('button'), closeButton2);
-    if (parentButton && parentButton.asElement()) {
-      await parentButton.asElement().click();
-      console.log('关闭了弹窗');
-    }
-    await delay(1000);
-    
-    console.log('再次点击 Run 按钮...');
-    await findAndClickButton(page, 'Run');
+  const runButtonSeletor = "button>div>span:nth-child(1)";
+  const runButton = await page.waitForSelector(runButtonSeletor, { visible: true });
+  await runButton.click();
+  if (runButton){
+    console.log("点击了Run按钮");
+  }else{
+    console.log("点击Run按钮失败");
   }
+    
+  // 步骤 8: 再次点击 Run
+  await runButton.click();
+  console.log('再次点击Run按钮...');
   
   return workspaceId;
 }
