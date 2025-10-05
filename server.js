@@ -745,7 +745,7 @@ async function refreshToken(account) {
         });
         await page.reload({ waitUntil: 'networkidle2' });
         await captureTokenPromise;
-        await delay(2000);
+        //await delay(2000);
         // 保存刷新的token
         if (authToken) {
           newToken = authToken;
