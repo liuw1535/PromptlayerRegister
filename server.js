@@ -743,18 +743,9 @@ async function refreshToken(account) {
           // 添加新的请求监听器
           page.on('request', requestListener);
         });
-
+        await page.reload({ waitUntil: 'networkidle2' });
         await captureTokenPromise;
-
-        // 如果仍未获取到token，尝试通过执行JS获取
-        if (!authToken) {
-          console.log('通过页面交互触发API请求...');
-
-          // 尝试与页面交互，可能触发API请求
-          await page.reload({ waitUntil: 'networkidle2' });
-          await delay(2000);
-        }
-
+        await delay(2000);
         // 保存刷新的token
         if (authToken) {
           newToken = authToken;
