@@ -362,9 +362,9 @@ async function handlePostOnboarding(page) {
   // 步骤 2: 关闭第一个弹窗
   console.log('步骤 2: 关闭首页弹窗...');
   await delay(2000);
-  const closeButtonSelector = '[id="radix-:r32:"] > button > svg';
+  const closeButtonSelector = '[id^="radix-"] button:nth-child(2)>svg';
   const closeButton = await page.waitForSelector(closeButtonSelector);
-  await closeButton.click();
+  await closeButton.click();    
 
   
   // 步骤 4: 点击 "spanButton" 按钮
@@ -400,6 +400,8 @@ async function handlePostOnboarding(page) {
   }else{
     console.log("点击Run按钮失败");
   }
+  await runButton.click();
+  await delay(2000);
     
   // 步骤 8: 再次点击 Run
   await runButton.click();
@@ -426,6 +428,7 @@ async function captureToken(page) {
           authToken = auth.replace('Bearer ', '').trim();
           console.log('捕获到 Authorization Token!');
           tokenCaptured = true;
+          page.off('request', requestListener);
           resolve();
         }
       }
@@ -434,28 +437,11 @@ async function captureToken(page) {
     page.on('request', requestListener);
   });
   
-  // 设置超时
-  const timeoutPromise = delay(2000).then(() => {
-    console.log('等待捕获token超时，继续执行...');
-  });
-  
-  // 等待token捕获或超时，谁先发生就先继续
-  await Promise.race([tokenPromise,timeoutPromise]);
-  
-  // 如果未捕获到，尝试主动触发
-  if (!tokenCaptured) {
-    console.log('未能捕获到 Token，尝试主动触发...');
-    await page.evaluate(() => {
-      const buttons = document.querySelectorAll('button');
-      buttons.forEach(btn => {
-        if (btn.textContent && (btn.textContent.includes('Run') || btn.textContent.includes('Test'))) {
-          btn.click();
-        }
-      });
-    });
-    
-    await delay(3000);
+  await tokenPromise;
+  if (!tokenCaptured){
+    console.log("捕获失败");
   }
+  
   
   return authToken;
 }
@@ -749,26 +735,16 @@ async function refreshToken(account) {
               if (headers['authorization']) {
                 authToken = headers['authorization'].replace('Bearer ', '').trim();
                 console.log('捕获到 Authorization Token!');
+                page.off('request', requestListener);
                 resolve();
               }
             }
-            request.continue();
           };
-          
-          // 移除所有现有的请求监听器，避免冲突
-          page.removeAllListeners('request');
-          
           // 添加新的请求监听器
           page.on('request', requestListener);
         });
         
-        // 设置超时
-        const timeoutPromise = delay(2000).then(() => {
-          console.log('等待捕获token超时，继续执行...');
-        });
-        
-        // 等待token捕获或超时，谁先发生就先继续
-        await Promise.race([captureTokenPromise,timeoutPromise]);
+        await captureTokenPromise;
         
         // 如果仍未获取到token，尝试通过执行JS获取
         if (!authToken) {
@@ -835,8 +811,8 @@ app.post('/api/register', async (req, res) => {
     const count = body.count !== undefined ? body.count : 1;
     const emailDomain = body.emailDomain;
     
-    if (count < 1 || count > 10) {
-      return res.status(400).json({ error: '注册数量必须在1-10之间' });
+    if (count < 1 || count > 100) {
+      return res.status(400).json({ error: '注册数量必须在1-100之间' });
     }
     
     console.log(`开始注册 ${count} 个账号...`);
