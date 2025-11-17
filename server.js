@@ -12,7 +12,7 @@ puppeteer.use(StealthPlugin());
 
 // 创建Express应用
 const app = express();
-const PORT = process.env.PORT || 6000;
+const PORT = process.env.PORT || 7000;
 
 // 中间件
 app.use(cors());
@@ -322,128 +322,48 @@ async function handleOnboarding(page, companyName) {
   console.log('Onboarding 流程完成！');
 }
 
-// 处理后续步骤
-async function handlePostOnboarding(page) {
-  console.log('继续执行后续步骤...');
-
-  // 步骤 1: 点击 Finish 按钮
-  console.log('步骤 1: 点击 Finish 按钮...');
-  await delay(1000);
-
-  const finishButton = await page.evaluateHandle(() => {
-    const buttons = Array.from(document.querySelectorAll('button[type="submit"]'));
-    return buttons.find(btn => btn.textContent && btn.textContent.includes('Finish'));
-  });
-
-  if (finishButton && finishButton.asElement()) {
-    await finishButton.asElement().click();
-    console.log('点击了 Finish 按钮');
-  } else {
-    const finishBtn = await page.$('button[type="submit"].bg-primary');
-    if (finishBtn) {
-      await finishBtn.click();
-      console.log('点击了 Finish 按钮（备用方法）');
-    }
-  }
-
-  await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => { });
-  await delay(3000);
-
-  // 验证 workspace 页面
-  const currentUrlAfterFinish = page.url();
-  let workspaceId = null;
-  if (currentUrlAfterFinish.includes('/workspace/') && currentUrlAfterFinish.includes('/home')) {
-    console.log(`成功跳转到 workspace 页面: ${currentUrlAfterFinish}`);
-    const workspaceMatch = currentUrlAfterFinish.match(/workspace\/(\d+)/);
-    workspaceId = workspaceMatch ? workspaceMatch[1] : null;
-    console.log(`Workspace ID: ${workspaceId}`);
-  }
-
-  // 步骤 2: 关闭第一个弹窗
-  console.log('步骤 2: 关闭首页弹窗...');
-  await delay(2000);
-  const closeButtonSelector = '[id^="radix-"] button:nth-child(2)>svg';
-  const closeButton = await page.waitForSelector(closeButtonSelector);
-  await closeButton.click();
-
-
-  // 步骤 4: 点击 "spanButton" 按钮
-  console.log('步骤 3: 点击 spanButton 按钮...');
-  await delay(2000);
-  const spanButtonSelector = "#registry-core h3 span";
-  const spanButton = await page.waitForSelector(spanButtonSelector, { visible: true });
-  await spanButton.click();
-
-  await delay(3000);
-
-  // 步骤 5: 页面跳转后，点击span元素进入有Run按钮的界面
-  console.log('步骤 4: 点击Editor进入Run界面...');
-  const EditorSelector = 'div:nth-child(3) > a > span > span';
-  const Editor = await page.waitForSelector(EditorSelector, { visible: true });
-  Editor.click();
-  if (Editor) {
-    console.log('Editor点击成功');
-  } else {
-    console.log('Editor点击失败');
-  }
-
-  await delay(2000);
-
-  // 步骤 7: 点击 Run 按钮
-  console.log('步骤 5: 点击 Run 按钮...');
-  await delay(2000);
-  const runButtonSeletor = "button>div>span:nth-child(1)";
-  const runButton = await page.waitForSelector(runButtonSeletor, { visible: true });
-  await runButton.click();
-  if (runButton) {
-    console.log("点击了Run按钮");
-  } else {
-    console.log("点击Run按钮失败");
-  }
-  await runButton.click();
-  await delay(2000);
-
-  // 步骤 8: 再次点击 Run
-  await runButton.click();
-  console.log('再次点击Run按钮...');
-
-  return workspaceId;
-}
-
-// 捕获 API Token
-async function captureToken(page) {
-  console.log('步骤 9: 等待并捕获 API 请求...');
+// 捕获注册时的 Token（在 onboarding 页面监听 get-user 接口）
+async function captureTokenOnOnboarding(page) {
+  console.log('等待并捕获 get-user API 请求...');
 
   let authToken = null;
-  let tokenCaptured = false;
 
-  // 创建一个Promise，当捕获到token或超时时解决
-  const tokenPromise = new Promise((resolve) => {
+  // 移除所有现有的请求监听器
+  page.removeAllListeners('request');
+
+  // 创建一个Promise，当捕获到token时解决
+  const captureTokenPromise = new Promise(resolve => {
     const requestListener = request => {
       const url = request.url();
-      if (url.includes('api.promptlayer.com/api/dashboard/v2/workspaces') && url.includes('/run_groups')) {
+      if (url.includes('api.promptlayer.com/get-user')) {
         const headers = request.headers();
         if (headers['authorization']) {
-          const auth = headers['authorization'];
-          authToken = auth.replace('Bearer ', '').trim();
+          authToken = headers['authorization'].replace('Bearer ', '').trim();
           console.log('捕获到 Authorization Token!');
-          tokenCaptured = true;
           page.off('request', requestListener);
-          resolve();
+          resolve(authToken);
         }
       }
+      // 继续所有请求
+      if (request.resourceType() === 'image' || request.resourceType() === 'font') {
+        request.abort();
+      } else {
+        request.continue();
+      }
     };
-
     page.on('request', requestListener);
   });
 
-  await tokenPromise;
-  if (!tokenCaptured) {
-    console.log("捕获失败");
-  }
+  // 并行执行页面刷新和token捕获，一旦捕获到token就立即返回
+  const reloadPromise = page.reload({ waitUntil: 'networkidle2' }).catch(() => {});
+  
+  // 使用Promise.race，哪个先完成就返回哪个结果
+  const result = await Promise.race([
+    captureTokenPromise,
+    reloadPromise.then(() => authToken) // 如果reload先完成但没捕获到token，返回null
+  ]);
 
-
-  return authToken;
+  return result || authToken;
 }
 
 // 保存账户信息
@@ -586,20 +506,15 @@ async function registerAccount(emailDomain = null) {
 
       // 处理 Onboarding 流程
       if (currentUrl.includes('/onboarding')) {
-        await handleOnboarding(page, companyName);
-
-        // 只有当成功进入 Onboarding 流程后，才处理后续步骤
-        workspaceId = await handlePostOnboarding(page);
-
-        // 捕获 Token
-        const authToken = await captureToken(page);
+        // 捕获 Token（在 onboarding 页面监听 get-user 接口）
+        const authToken = await captureTokenOnOnboarding(page);
 
         // 保存完整信息
         if (authToken) {
-          accountData = await saveAccountInfo(userInfo, companyName, authToken, workspaceId);
+          accountData = await saveAccountInfo(userInfo, companyName, authToken, null);
         }
 
-        console.log('所有步骤执行完成！');
+        console.log('注册流程完成！');
       } else {
         // 这里表示失败，关闭浏览器实例，然后重新尝试
         console.log('注册失败，URL仍然在注册页面。准备重试...');
@@ -726,6 +641,9 @@ async function refreshToken(account) {
         // 修改拦截规则，只记录请求头，不阻止任何请求
         page.setRequestInterception(true);
 
+        // 移除所有现有的请求监听器
+        page.removeAllListeners('request');
+
         // 创建一个Promise，当捕获到token时解决
         const captureTokenPromise = new Promise(resolve => {
           const requestListener = request => {
@@ -739,11 +657,18 @@ async function refreshToken(account) {
                 resolve();
               }
             }
+            // 继续所有请求
+            if (request.resourceType() === 'image' || request.resourceType() === 'font') {
+              request.abort();
+            } else {
+              request.continue();
+            }
           };
-          // 添加新的请求监听器
           page.on('request', requestListener);
         });
-        await page.reload({ waitUntil: 'networkidle2' });
+
+        // 并行执行页面刷新和token捕获，一旦捕获到token就立即返回
+        page.reload({ waitUntil: 'networkidle2' }).catch(() => {});
         await captureTokenPromise;
         //await delay(2000);
         // 保存刷新的token
