@@ -4,7 +4,6 @@ const cors = require('cors');
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const { randomBytes } = require('crypto');
-const fs = require('fs').promises;
 const path = require('path');
 
 // 使用Stealth插件提高隐蔽性
@@ -20,11 +19,9 @@ app.use(bodyParser.json());
 
 // 默认配置
 const DEFAULT_CONFIG = {
-  // 可以指定Chrome浏览器路径，例如：'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'
   browserPath: '',
   headless: false,
-  slowMo: 0, // 放慢操作速度，便于调试
-  defaultOutputDir: './output',
+  slowMo: 0,
   emailDomains: [
     '@vkgl.keomiao.space',
     '@coat.suitbase.cfd',
@@ -33,22 +30,14 @@ const DEFAULT_CONFIG = {
   ]
 };
 
-// 尝试从配置文件加载配置
-async function loadConfig() {
+// 加载配置
+function loadConfig() {
   try {
-    const configPath = path.join(__dirname, 'config.js');
-    const configExists = await fs.access(configPath).then(() => true).catch(() => false);
-
-    if (configExists) {
-      // 动态导入配置
-      const userConfig = require('./config.js');
-      return { ...DEFAULT_CONFIG, ...userConfig };
-    }
+    const userConfig = require('./config.js');
+    return { ...DEFAULT_CONFIG, ...userConfig };
   } catch (error) {
-    console.log('未找到配置文件或加载配置出错，使用默认配置');
+    return DEFAULT_CONFIG;
   }
-
-  return DEFAULT_CONFIG;
 }
 
 // ========== 辅助函数 ==========
@@ -112,10 +101,7 @@ async function findAndClickButton(page, buttonText, useXPath = false) {
 }
 
 // 配置浏览器
-async function setupBrowser() {
-  // 加载配置
-  const config = await loadConfig();
-
+async function setupBrowser(config) {
   const launchOptions = {
     headless: config.headless,
     slowMo: config.slowMo,
@@ -130,14 +116,11 @@ async function setupBrowser() {
     ignoreHTTPSErrors: true
   };
 
-  // 如果指定了自定义浏览器路径，则使用
   if (config.browserPath) {
     launchOptions.executablePath = config.browserPath;
-    console.log(`使用自定义浏览器路径: ${config.browserPath}`);
   }
 
-  const browser = await puppeteer.launch(launchOptions);
-  return browser;
+  return await puppeteer.launch(launchOptions);
 }
 
 // 配置页面
@@ -308,7 +291,7 @@ async function handleOnboarding(page, companyName) {
   await findAndClickButton(page, 'Continue', true);
   await delay(5000);
 
-  // 步骤 6: 选择圆形选择框（合并的步骤）
+  // 步骤 6: 选择圆形选择框
   console.log('步骤 6: 选择圆形选择框...');
   await delay(2000);
 
@@ -319,119 +302,70 @@ async function handleOnboarding(page, companyName) {
     await delay(1000);
   }
 
+  // 步骤 7: 点击 Finish 按钮提交
+  console.log('步骤 7: 点击 Finish 按钮...');
+  await delay(1000);
+  await findAndClickButton(page, 'Finish', true);
+  await delay(3000);
+
   console.log('Onboarding 流程完成！');
 }
 
-// 捕获注册时的 Token（在 onboarding 页面监听 get-user 接口）
-async function captureTokenOnOnboarding(page) {
-  console.log('等待并捕获 get-user API 请求...');
-
+// 捕获Token
+async function captureToken(page) {
   let authToken = null;
-
-  // 移除所有现有的请求监听器
   page.removeAllListeners('request');
 
-  // 创建一个Promise，当捕获到token时解决
-  const captureTokenPromise = new Promise(resolve => {
-    const requestListener = request => {
-      const url = request.url();
-      if (url.includes('api.promptlayer.com/get-user')) {
-        const headers = request.headers();
-        if (headers['authorization']) {
-          authToken = headers['authorization'].replace('Bearer ', '').trim();
-          console.log('捕获到 Authorization Token!');
-          page.off('request', requestListener);
+  const capturePromise = new Promise(resolve => {
+    const listener = request => {
+      if (request.url().includes('api.promptlayer.com/get-user')) {
+        const auth = request.headers()['authorization'];
+        if (auth) {
+          authToken = auth.replace('Bearer ', '').trim();
+          page.off('request', listener);
           resolve(authToken);
         }
       }
-      // 继续所有请求
-      if (request.resourceType() === 'image' || request.resourceType() === 'font') {
-        request.abort();
-      } else {
-        request.continue();
-      }
+      request.resourceType() === 'image' || request.resourceType() === 'font' ? request.abort() : request.continue();
     };
-    page.on('request', requestListener);
+    page.on('request', listener);
   });
 
-  // 并行执行页面刷新和token捕获，一旦捕获到token就立即返回
-  const reloadPromise = page.reload({ waitUntil: 'networkidle2' }).catch(() => {});
-  
-  // 使用Promise.race，哪个先完成就返回哪个结果
-  const result = await Promise.race([
-    captureTokenPromise,
-    reloadPromise.then(() => authToken) // 如果reload先完成但没捕获到token，返回null
-  ]);
-
-  return result || authToken;
+  page.reload({ waitUntil: 'networkidle2' }).catch(() => {});
+  return await Promise.race([capturePromise, new Promise(resolve => setTimeout(() => resolve(authToken), 10000))]);
 }
 
-// 保存账户信息
-async function saveAccountInfo(userInfo, companyName, authToken, workspaceId) {
-  const { email, fullName, password } = userInfo;
-
-  if (authToken) {
-    const accountData = {
-      email,
-      password,
-      name: fullName,
-      company: companyName,
-      token: authToken,
-      workspaceId,
-      timestamp: new Date().toISOString()
-    };
-
-    // 保存为文本格式
-    const textData = `
-===============================
-Email: ${email}
-Password: ${password}
-Name: ${fullName}
-Company: ${companyName}
-Token: ${authToken}
-Workspace ID: ${workspaceId}
-Timestamp: ${new Date().toISOString()}
-===============================
-`;
-    await fs.appendFile('accounts_with_tokens.txt', textData);
-
-    console.log('账户信息和 Token 已保存！');
-    console.log('Email:', email);
-    console.log('Password:', password);
-    console.log('Token:', authToken);
-
-    return accountData;
-  }
-
-  return null;
+// 构建账户数据
+function buildAccountData(userInfo, companyName, authToken, workspaceId) {
+  return authToken ? {
+    email: userInfo.email,
+    password: userInfo.password,
+    name: userInfo.fullName,
+    company: companyName,
+    token: authToken,
+    workspaceId,
+    timestamp: new Date().toISOString()
+  } : null;
 }
 
 // 注册账号函数
-async function registerAccount(emailDomain = null) {
-  // 加载配置
-  const config = await loadConfig();
-
-  // 如果提供了自定义邮箱域名，则使用它
+async function registerAccount(browser, config, emailDomain = null) {
   if (emailDomain) {
-    config.emailDomains = [emailDomain];
+    config = { ...config, emailDomains: [emailDomain] };
   }
 
-  // 生成用户信息
   const userInfo = generateUserInfo(config);
   const companyName = generateCompanyName();
+  console.log(`注册: ${userInfo.email}`);
 
-  console.log(`使用的邮箱: ${userInfo.email}`);
-  console.log(`使用的姓名: ${userInfo.fullName}`);
-  console.log(`使用的密码: ${userInfo.password}`);
-
-  const browser = await setupBrowser();
   let accountData = null;
   let retryCount = 0;
   const maxRetries = 3;
 
   while (retryCount < maxRetries && !accountData) {
+    let page;
     try {
-      const page = await setupPage(browser);
+      page = await setupPage(browser);
 
       // 注册流程
       console.log('访问主页以建立会话...');
@@ -501,52 +435,43 @@ async function registerAccount(emailDomain = null) {
       console.log('注册表单已提交！');
       await delay(5000);
 
-      const currentUrl = page.url();
-      let workspaceId = null;
-
-      // 处理 Onboarding 流程
-      if (currentUrl.includes('/onboarding')) {
-        // 捕获 Token（在 onboarding 页面监听 get-user 接口）
-        const authToken = await captureTokenOnOnboarding(page);
-
-        // 保存完整信息
+      if (page.url().includes('/onboarding')) {
+        // 处理Onboarding流程
+        await handleOnboarding(page, companyName);
+        
+        // 捕获Token
+        const authToken = await captureToken(page);
         if (authToken) {
-          accountData = await saveAccountInfo(userInfo, companyName, authToken, null);
+          accountData = buildAccountData(userInfo, companyName, authToken, null);
+          console.log('注册成功!');
         }
-
-        console.log('注册流程完成！');
       } else {
-        // 这里表示失败，关闭浏览器实例，然后重新尝试
-        console.log('注册失败，URL仍然在注册页面。准备重试...');
         retryCount++;
-        console.log(`重试次数: ${retryCount}/${maxRetries}`);
-        await delay(3000 + Math.random() * 2000);
+        console.log(`重试 ${retryCount}/${maxRetries}`);
+        await delay(3000);
       }
-
     } catch (error) {
-      console.error('发生错误:', error);
+      console.error('错误:', error.message);
       retryCount++;
-      console.log(`重试次数: ${retryCount}/${maxRetries}`);
-      await delay(3000 + Math.random() * 2000);
+      await delay(3000);
+    } finally {
+      if (page) await page.close().catch(() => {});
     }
   }
-
-  // 关闭浏览器
-  await browser.close();
 
   return accountData;
 }
 
 // 刷新token函数
-async function refreshToken(account) {
-  const browser = await setupBrowser();
+async function refreshToken(browser, account) {
   let newToken = null;
   let retryCount = 0;
   const maxRetries = 3;
 
   while (retryCount < maxRetries && !newToken) {
+    let page;
     try {
-      const page = await setupPage(browser);
+      page = await setupPage(browser);
 
       // 访问登录页面
       console.log('访问登录页面...');
@@ -603,116 +528,35 @@ async function refreshToken(account) {
         continue;
       }
 
-      // 等待一段时间让页面加载或重定向完成
-      console.log('等待页面加载或重定向...');
-      const hasErrorMessage = await page.evaluate(() => {
-        // 方法1：检查所有div中是否包含错误文本
-        const divs = Array.from(document.querySelectorAll('div'));
-        return divs.some(div =>
-          div.textContent &&
-          div.textContent.includes('Email and or password is incorrect')
-        );
-      });
+      const hasError = await page.evaluate(() => 
+        Array.from(document.querySelectorAll('div')).some(d => d.textContent?.includes('Email and or password is incorrect'))
+      );
 
-      let currentUrl = page.url();
-      if (hasErrorMessage && currentUrl.includes('/login')) {
-        console.log(`账号 ${account.email} 登录失败：邮箱或密码不正确`);
-        // 邮箱或密码不正确的错误不需要重试，直接返回错误信息
-        return {
-          email: account.email,
-          token: null,
-          error: '邮箱或密码不正确'
-        };
+      if (hasError && page.url().includes('/login')) {
+        return { email: account.email, token: null, error: '邮箱或密码不正确' };
       }
 
       await delay(5000);
 
-      // 首先验证是否成功登录
-      currentUrl = page.url();
-      if (currentUrl.includes('/workspace/') && currentUrl.includes('/home')) {
-        console.log('登录成功，已进入工作区页面');
-
-        // 监听 API 请求，获取 token
-        let authToken = null;
-
-        console.log('等待并捕获API请求...');
-        console.log('请稍等片刻，网页将自动调用API...');
-
-        // 修改拦截规则，只记录请求头，不阻止任何请求
-        page.setRequestInterception(true);
-
-        // 移除所有现有的请求监听器
-        page.removeAllListeners('request');
-
-        // 创建一个Promise，当捕获到token时解决
-        const captureTokenPromise = new Promise(resolve => {
-          const requestListener = request => {
-            const url = request.url();
-            if (url.includes('api.promptlayer.com/get-user')) {
-              const headers = request.headers();
-              if (headers['authorization']) {
-                authToken = headers['authorization'].replace('Bearer ', '').trim();
-                console.log('捕获到 Authorization Token!');
-                page.off('request', requestListener);
-                resolve();
-              }
-            }
-            // 继续所有请求
-            if (request.resourceType() === 'image' || request.resourceType() === 'font') {
-              request.abort();
-            } else {
-              request.continue();
-            }
-          };
-          page.on('request', requestListener);
-        });
-
-        // 并行执行页面刷新和token捕获，一旦捕获到token就立即返回
-        page.reload({ waitUntil: 'networkidle2' }).catch(() => {});
-        await captureTokenPromise;
-        //await delay(2000);
-        // 保存刷新的token
+      if (page.url().includes('/workspace/') && page.url().includes('/home')) {
+        const authToken = await captureToken(page);
         if (authToken) {
           newToken = authToken;
-
-          // 保存到文件
-          const refreshData = {
-            email: account.email,
-            token: authToken,
-            refreshed_at: new Date().toISOString()
-          };
-
-          // 保存为文本格式
-          const textData = `
-===============================
-Email: ${account.email}
-Token: ${authToken}
-Refreshed At: ${new Date().toISOString()}
-===============================
-`;
-          await fs.appendFile('refreshed_tokens.txt', textData);
-
-          console.log('刷新的 Token 已保存！');
-          console.log('Email:', account.email);
-          console.log('Token:', authToken);
+          console.log('Token刷新成功!');
         } else {
-          console.log(`无法获取账号 ${account.email} 的token`);
           retryCount++;
         }
       } else {
-        console.log(`当前URL: ${currentUrl}`);
-        console.log('未成功进入工作区。尝试重试...');
         retryCount++;
       }
 
     } catch (error) {
-      console.error('发生错误:', error);
+      console.error('错误:', error.message);
       retryCount++;
+    } finally {
+      if (page) await page.close().catch(() => {});
     }
   }
-
-  // 关闭浏览器
-  await browser.close();
 
   return { email: account.email, token: newToken };
 }
@@ -721,28 +565,22 @@ Refreshed At: ${new Date().toISOString()}
 
 // 注册账号接口
 app.post('/api/register', async (req, res) => {
+  const { count = 1, emailDomain } = req.body || {};
+  
+  if (count < 1 || count > 100) {
+    return res.status(400).json({ error: '注册数量必须在1-100之间' });
+  }
+
+  const config = loadConfig();
+  const browser = await setupBrowser(config);
+  const results = [];
+
   try {
-    // 确保req.body存在，并提供默认值
-    const body = req.body || {};
-    const count = body.count !== undefined ? body.count : 1;
-    const emailDomain = body.emailDomain;
-
-    if (count < 1 || count > 100) {
-      return res.status(400).json({ error: '注册数量必须在1-100之间' });
-    }
-
-    console.log(`开始注册 ${count} 个账号...`);
-
-    const results = [];
     for (let i = 0; i < count; i++) {
-      console.log(`注册第 ${i + 1}/${count} 个账号`);
-      const accountData = await registerAccount(emailDomain);
-      if (accountData) {
-        results.push(accountData);
-      }
+      console.log(`[${i + 1}/${count}] 注册中...`);
+      const accountData = await registerAccount(browser, config, emailDomain);
+      if (accountData) results.push(accountData);
     }
-
-    console.log(`成功注册 ${results.length}/${count} 个账号`);
 
     return res.json({
       success: true,
@@ -750,52 +588,54 @@ app.post('/api/register', async (req, res) => {
       accounts: results
     });
   } catch (error) {
-    console.error('注册接口错误:', error);
-    return res.status(500).json({ error: '服务器内部错误', message: error.message });
+    console.error('注册错误:', error);
+    return res.status(500).json({ error: error.message });
+  } finally {
+    await browser.close().catch(() => {});
   }
 });
 
 // 刷新token接口
 app.post('/api/refresh', async (req, res) => {
+  const { accounts } = req.body || {};
+
+  if (!accounts || !Array.isArray(accounts) || accounts.length === 0) {
+    return res.status(400).json({ error: '请提供有效的账号列表' });
+  }
+
+  if (accounts.length > 100) {
+    return res.status(400).json({ error: '一次最多刷新100个账号' });
+  }
+
+  const config = loadConfig();
+  const browser = await setupBrowser(config);
+  const results = [];
+
   try {
-    const { accounts } = req.body;
-
-    if (!accounts || !Array.isArray(accounts) || accounts.length === 0) {
-      return res.status(400).json({ error: '请提供有效的账号列表' });
-    }
-
-    if (accounts.length > 100) {
-      return res.status(400).json({ error: '一次最多刷新100个账号' });
-    }
-
-    console.log(`开始刷新 ${accounts.length} 个账号的token...`);
-
-    const results = [];
     for (let i = 0; i < accounts.length; i++) {
       const account = accounts[i];
 
       if (!account.email || !account.password) {
-        console.log(`跳过第 ${i + 1} 个账号，缺少邮箱或密码`);
         results.push({ email: account.email || 'unknown', token: null, error: '缺少邮箱或密码' });
         continue;
       }
 
-      console.log(`刷新第 ${i + 1}/${accounts.length} 个账号的token: ${account.email}`);
-      const result = await refreshToken(account);
+      console.log(`[${i + 1}/${accounts.length}] 刷新: ${account.email}`);
+      const result = await refreshToken(browser, account);
       results.push(result);
     }
 
     const successCount = results.filter(r => r.token).length;
-    console.log(`成功刷新 ${successCount}/${accounts.length} 个账号的token`);
-
     return res.json({
       success: true,
       refreshed: successCount,
       accounts: results
     });
   } catch (error) {
-    console.error('刷新token接口错误:', error);
-    return res.status(500).json({ error: '服务器内部错误', message: error.message });
+    console.error('刷新错误:', error);
+    return res.status(500).json({ error: error.message });
+  } finally {
+    await browser.close().catch(() => {});
   }
 });
 
